@@ -1505,8 +1505,8 @@ function buildBDrill(){
         (ratio!==null? ' &mdash; <b>'+(ratio*100).toFixed(0)+'&cent; of contraction per $1 of '+
           'expansion</b>, against 40&ndash;54&cent; across the book historically.' : '.');
     }
-    note.innerHTML=head+'<br><span class="tn">Each row reads left to right: <b>'+esc(ch.pl)+
-      ' + expansion &minus; contraction = '+esc(ch.el)+'</b>. '+
+    note.innerHTML=head+'<br><span class="tn">Each row shows the result first, then where it came '+
+      'from: <b>'+esc(ch.el)+' = '+esc(ch.pl)+' + expansion &minus; contraction</b>. '+
       rows.length+' accounts moved &mdash; '+nE+' expanding, '+nC+' contracting, '+nF+
       ' flat within &plusmn;1%. Only accounts that moved on <i>this</i> bar are listed, so the '+
       'ending total here will not match the next bar&rsquo;s opening total &mdash; different rows. '+
@@ -1520,8 +1520,9 @@ function buildBDrill(){
       {k:'seg',t:'Segment'},
       {k:'region',t:'Region'},
       {k:'state',t:'State',r:r=>stateChip(r.state)},
-      {k:'flr',t:'Commit floor',n:1,r:r=>r.flr?k$(r.flr):'<span class="tn">&mdash;</span>'},
-      /* prior + expansion - contraction = ending. Reads left to right as the arithmetic. */
+      /* Result first, then where it came from: ending and opening sit side by side so the
+         movement is visible at a glance, and expansion/contraction explain the gap. */
+      {k:'ending',t:ch.el,n:1,r:r=>'<b>'+k$(r.ending)+'</b>'},
       {k:'prior',t:ch.pl,n:1,r:r=>k$(r.prior)},
       {k:'exp',t:'Expansion',n:1,r:r=>r.exp?
         '<span class="tu">+'+k$(r.exp)+'</span>':'<span class="tn">&mdash;</span>'},
@@ -1529,7 +1530,7 @@ function buildBDrill(){
         '<span class="td">\u2212'+k$(Math.abs(r.con))+'</span>':'<span class="tn">&mdash;</span>'},
       {k:'v',t:'Net change',n:1,r:r=>'<span class="'+(r.mv==='flat'?'tn':(r.v>0?'tu':'td'))+'">'+
         (r.v>0?'+':'\u2212')+k$(Math.abs(r.v))+'</span>'},
-      {k:'ending',t:ch.el,n:1,r:r=>'<b>'+k$(r.ending)+'</b>'},
+      {k:'flr',t:'Commit floor',n:1,r:r=>r.flr?k$(r.flr):'<span class="tn">&mdash;</span>'},
       {k:'mv',t:'Move',tot:false,r:r=>r.mv==='exp'?'<span class="chip c-gn">expanding</span>'
         :(r.mv==='con'?'<span class="chip c-rd">contracting</span>'
         :'<span class="chip">flat</span>')},
