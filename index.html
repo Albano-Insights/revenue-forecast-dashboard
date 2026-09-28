@@ -300,6 +300,12 @@ tfoot td{border-top:2px solid var(--bd);border-bottom:none;font-weight:600;
     <div class="note" style="margin-top:8px;" id="gNote"></div>
   </div>
 
+  <div class="card" style="margin-bottom:14px;">
+    <div class="sec">Month-on-month growth, every month on record</div>
+    <div class="cw" style="height:210px;"><canvas id="cSeas"></canvas></div>
+    <div class="note" style="margin-top:8px;" id="seasNote"></div>
+  </div>
+
   <div class="grid g4" id="useKpi" style="margin-bottom:14px;"></div>
 
   <div class="card">
@@ -933,7 +939,8 @@ function buildPicks(){
 function rebuildView(v){
   if(v==='bridge') buildBridge();
   else if(v==='pipe'){ buildPipeKpi(); buildPipeStrip(); buildPipeChart(); buildSrcChart(); buildPipeTables(); buildOpen(); }
-  else if(v==='usage'){ buildSplit(); buildSepRates(); buildGrowth(); buildUseKpi(); buildUseTable(); }
+  else if(v==='usage'){ buildSplit(); buildSepRates(); buildGrowth(); buildSeasonality();
+                        buildUseKpi(); buildUseTable(); }
   else if(v==='map')   buildQuad();
   else if(v==='field') buildField();
   else if(v==='risk')  buildRisk();
@@ -945,7 +952,54 @@ function applyFilters(){
   rebuildView(ST.view);
 }
 function buildUseAll(){ buildPicks(); buildSplit(); buildSepRates(); buildGrowth();
-                        buildUseKpi(); buildUseTable(); }
+                        buildSeasonality(); buildUseKpi(); buildUseTable(); }
+
+/* Seasonality was tested and NOT modelled - n=2 is an anecdote, not a factor. It is on the page
+   because Q4 runs Nov-Jan, so the one month under suspicion sits inside the forecast window.
+   Showing it is how the exposure stays visible instead of living in a footnote. */
+function buildSeasonality(){
+  const U=D.usage, M=U.months, segs=Object.keys(U.bySeg);
+  const pick=segs.filter(s=>ST.fSeg.length? ST.fSeg.indexOf(s)>=0 : true);
+  const tot=M.map((_,i)=>pick.reduce((a,s)=>a+(U.bySeg[s][i]||0),0));
+  const rows=[];
+  for(let i=1;i<M.length;i++){
+    if(!tot[i-1]) continue;
+    rows.push({m:M[i], g:tot[i]/tot[i-1]-1, jan:M[i].slice(-2)==='01', dec:M[i].slice(-2)==='12'});
+  }
+  const jan=rows.filter(r=>r.jan), oth=rows.filter(r=>!r.jan);
+  const avg=a=>a.length? a.reduce((s,r)=>s+r.g,0)/a.length : 0;
+  const jm=avg(jan), om=avg(oth);
+
+  $('#seasNote').innerHTML=
+    '<span class="chip c-or">NOT MODELLED</span> Both Januaries on record are among the slowest '+
+    'months in the book &mdash; <b>'+pc(jm)+'</b> on average against <b>'+pc(om)+'</b> for every '+
+    'other month. Neither December dips, so the effect is January-specific. With n='+jan.length+
+    ' that is an anecdote rather than a seasonal factor, so <b>the forecast does not haircut it</b>. '+
+    'It is here because <b>FY27 Q4 runs November to January</b>: if January behaves the way it did '+
+    'in either prior year, the Q4 consumption line is overstated by <b>$1.2M to $1.6M</b> &mdash; '+
+    'more than every sales lever combined. Full series and the sensitivity are on the '+
+    '<b>TESTED</b> tab of the workbook.';
+
+  if(!HAS_CHART) return;
+  destroyChart('seas');
+  CH.seas=new Chart($('#cSeas'),{type:'bar',
+    data:{labels:rows.map(r=>r.m),datasets:[{
+      label:'Month-on-month growth',
+      data:rows.map(r=>r.g),
+      backgroundColor:rows.map(r=>r.jan?'#f85149cc':(r.dec?'#8b949e99':'#3fb95099')),
+      borderColor:rows.map(r=>r.jan?'#f85149':(r.dec?'#8b949e':'#3fb950')),
+      borderWidth:1}]},
+    options:{maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},ticks:{font:{size:8},maxRotation:90,minRotation:90}},
+              y:{grid:{color:GRID},ticks:{callback:v=>pc(v),font:{size:9}},
+                 title:{display:true,text:'Month on month',font:{size:10}}}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>{const r=rows[c.dataIndex];
+          return [pc(r.g)+' month on month',
+                  r.jan?'JANUARY - one of the two slowest months on record'
+                       :(r.dec?'December - note it does not dip':'')].filter(Boolean);}}}}}});
+  showChart('#cSeas');
+}
 function buildUseKpi(){
   const A=useRows(), tot=A.reduce((a,x)=>a+x.arr,0);
   if(!A.length){ $('#useKpi').innerHTML='<div class="card kpi neu" style="grid-column:1/-1">'+
