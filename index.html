@@ -465,7 +465,7 @@ const TIPS = {
   g3:'Compound month-over-month usage growth across the last three complete months (May to August 2026). This is the number to hold the forecast assumption against - the forecast applies one rate per segment, taken from a half-observed September.',
   bullet:'Metered usage for Jun, Jul and Aug 2026 as coloured bars - green rising, red falling, grey flat over the three months - then the September estimate in grey behind a divider, because it is projected rather than measured. The commit floor runs across all four in dashed orange: bars above it bill as overage, bars below are absorbed. September nets against August\u2019s floor, since the monthly table ends 31 August.',
   aug:'August metered consumption, one month, from usage_monthly.',
-  sep:'September estimate = 15 observed days x the weekday-weighted full-month factor (2.0004). The method was validated against July and August to within 0.5%.',
+  sep:'September estimate = 15 observed days x the weekday-weighted full-month factor, which lands at exactly 2.0000 this month because days 1-15 carry the same weekday mix as the full month. The method was tested on July and August, where the full month is known: it came in at -0.39% and +0.12%. A flat doubling would have been out by about 4% in both. Working on CALC_SEP rows 40-58.',
   g:'September over August, both measured from the daily table so the basis matches. Book-wide this is +2.50%.',
   state:'PAYGO = no commit, every dollar of usage bills. In overage = usage above commit, growth bills 1:1. At floor = usage below commit, growth is absorbed and bills nothing until it clears the commit.',
   plan:'Net new implied ARR target for this segment and region, from plan_targets.',
