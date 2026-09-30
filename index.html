@@ -69,6 +69,8 @@ th.sorted::after{content:'\25BE';margin-left:4px;font-size:.8em;}
 th.sorted.asc::after{content:'\25B4';}
 td{padding:5px 8px;text-align:right;border-bottom:1px solid rgba(48,54,61,.55);white-space:nowrap;}
 tbody tr:hover{background:var(--bg3);}
+tbody tr.selrow{background:rgba(31,111,235,.16);}
+tbody tr.selrow td:first-child{box-shadow:inset 3px 0 0 var(--ac);}
 .tscroll{overflow-x:auto;max-height:560px;overflow-y:auto;}
 .spk{display:inline-block;vertical-align:middle;}
 .tu{color:var(--gn);} .td{color:var(--rd);} .tn{color:var(--mu);}
@@ -137,7 +139,7 @@ tfoot td{border-top:2px solid var(--bd);border-bottom:none;font-weight:600;
     <button class="pill" data-view="risk">Risk vs plan</button>
   </div>
   <div class="stamp" id="stamp"></div>
-  <button class="pill" id="shareBtn" data-tip="Copies a link that opens this exact view: the tab, the segment and region filters, every control on every view, the account search and any risk cell you have drilled into. Table sort order is not carried.">Copy link</button>
+  <button class="pill" id="shareBtn" data-tip="Copies a link that opens this exact view: the tab, the segment and region filters, every control on every view, the account search, any risk cell you have drilled into and any rep you have selected. Table sort order is not carried.">Copy link</button>
 </div>
 
 <div class="gfilter">
@@ -396,8 +398,17 @@ tfoot td{border-top:2px solid var(--bd);border-bottom:none;font-weight:600;
       <div class="note" style="margin-top:8px;">Both bars are net new ARR. The field call is translated
         into that unit first &mdash; gross &times; the rep&rsquo;s historical accuracy &times; their netting
         ratio &mdash; because comparing a gross number to a netted one is the error this whole model exists
-        to stop.</div>
+        to stop. <b>Click a rep</b>, in the chart or the table, to list their deals below.</div>
     </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;">
+    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px;">
+      <div class="sec" id="fDealTitle" style="margin:0;">FY27 Q3 deals behind the call</div>
+      <button class="pill" id="fDealAll" style="display:none;">Show all reps</button>
+    </div>
+    <div class="note" id="fDealNote" style="margin-bottom:9px;"></div>
+    <div class="tscroll" style="max-height:520px;"><table id="tFDeals"></table></div>
   </div>
 </div>
 
@@ -449,9 +460,9 @@ const D = {"meta":{"asof":"2026-09-16","gen":"2026-09-28 21:37","future":31,"mis
 const CH = {}; const BUILT = {};
 const ST = {view:'bridge', dim:'byRegion', meas:'arr', uroll:'bySeg', uwin:'6', rl:'segreg',
             uq:'', fSeg:[], fReg:[], fCell:[], qst:'all', rq:'FY27 Q3',
-            bq:'FY27 Q3', bbar:'aug', sl:'company', sy:'shared', rcell:null, fl:'company',
+            bq:'FY27 Q3', bbar:'aug', sl:'company', sy:'shared', rcell:null, fl:'company', frep:null,
             sort:{tpipe:['mom',false], tsrc:['l12',false], tuse:['mom',false], trisk:['gap',true], tfield:['call',false], tfieldrep:['call',false], topen:['gross',false], triskdrill:['v',false],
-                  tbdrill:['v',false]}};
+                  tbdrill:['v',false], tfdeals:['wtd',false]}};
 
 const TIPS = {
   mom:'Momentum = Trend(created ARR) + 0.25 x Trend(deal count), each a half-split over the last 6 months. Above +0.30 is accelerating, below -0.30 is cooling, between is no signal.',
@@ -690,8 +701,15 @@ function totalRow(cols, rows){
 const sumBy=(rows,k)=>rows.reduce((s,r)=>s+(typeof r[k]==='number'?r[k]:0),0);
 const ratio=(rows,num,den)=>{const d=sumBy(rows,den); return d? sumBy(rows,num)/d : 0;};
 
+/* Last arguments per table, so a table can be redrawn in place - a row highlight changing, say -
+   without its builder being rerun. */
+const MKT={};
+function reTable(sel){ const a=MKT[sel]; if(a) mkTable.apply(null,a); }
+/* opts.onRow(r) makes rows clickable; opts.rowCls(r) is read at every draw, so a highlight
+   survives re-sorting. */
 function mkTable(sel, cols, rows, opts){
   const el=$(sel); if(!el) return;
+  MKT[sel]=[sel,cols,rows,opts];
   const key=sel.replace('#','').toLowerCase();
   let [sk,dir]=ST.sort[key];
   if(!rows.length){
@@ -711,8 +729,9 @@ function mkTable(sel, cols, rows, opts){
        ((!c.ns&&c.k===sk)?' class="sorted'+(dir?' asc':'')+'"':'')+'>'+c.t+'</th>';
   });
   h+='</tr></thead><tbody>';
-  sorted.forEach(r=>{
-    h+='<tr>';
+  sorted.forEach((r,ri)=>{
+    const rc=(opts&&opts.rowCls)? opts.rowCls(r) : '';
+    h+='<tr'+(rc?' class="'+rc+'"':'')+((opts&&opts.onRow)?' data-ri="'+ri+'" style="cursor:pointer"':'')+'>';
     cols.forEach(c=>{ h+='<td'+(c.n?' class="num"':'')+'>'+(c.r? c.r(r) : esc(r[c.k]))+'</td>'; });
     h+='</tr>';
   });
@@ -730,6 +749,9 @@ function mkTable(sel, cols, rows, opts){
     h+='</tr></tfoot>';
   }
   el.innerHTML=h;
+  if(opts&&opts.onRow) el.querySelectorAll('tbody tr[data-ri]').forEach(tr=>{
+    tr.onclick=()=>opts.onRow(sorted[+tr.dataset.ri]);
+  });
   el.querySelectorAll('th[data-k]').forEach(th=>{
     th.onclick=()=>{
       const k=th.dataset.k;
@@ -1909,7 +1931,10 @@ function buildField(){
   if(!F.reps.length){ ['#cFunnel','#cFWeek','#cFRep'].forEach(s=>emptyChart(s,'No reps match the current filter.'));
     $('#fKpi').innerHTML=''; mkTable('#tField',[{k:'x',t:'No reps match',ns:1}],[]);
     ['#fFunnelNote','#fWeekNote','#fRepNote'].forEach(s=>{$(s).textContent='No reps match the current filter.';});
+    FIELD_REPS=[]; ST.frep=null; buildFieldDeals();
     return; }
+  FIELD_REPS=F.reps;
+  if(ST.frep && !F.reps.some(r=>r.rep===ST.frep)) ST.frep=null;   // filtered out from under us
   ['#cFunnel','#cFWeek','#cFRep','#cFGross','#cFNet','#cFCov'].forEach(showChart);
 
   /* Three levels, all built from rep grain on BOTH sides - the rep's own call and the pipeline
@@ -2147,13 +2172,18 @@ function buildField(){
     destroyChart('frep');
     const rs=F.reps.filter(r=>r.call>0||r.wtd>0).slice()
                    .sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).slice(0,12);
+    FREP_RS=rs;
+    const bc=repBarColors();
     CH.frep=new Chart($('#cFRep'),lab({type:'bar',
       data:{labels:rs.map(r=>r.name),datasets:[
         {label:'Field call, translated',data:rs.map(r=>r.xlated),
-         backgroundColor:'#d2a8ffcc',borderColor:'#d2a8ff',borderWidth:1},
+         backgroundColor:bc[0],borderColor:'#d2a8ff',borderWidth:1},
         {label:'Analytics weighted incremental',data:rs.map(r=>r.wtd),
-         backgroundColor:'#3fb950cc',borderColor:'#3fb950',borderWidth:1}]},
+         backgroundColor:bc[1],borderColor:'#3fb950',borderWidth:1}]},
+      /* the whole row is the hit target, not just the thin bar */
       options:{indexAxis:'y',maintainAspectRatio:false,
+        interaction:{mode:'index',axis:'y',intersect:false},
+        onClick:(e,els)=>{ if(els&&els.length) selRep(rs[els[0].index].rep); },
         scales:{x:{grid:{color:GRID},ticks:{callback:v=>k$(v),font:{size:9}}},
                 y:{grid:{display:false},ticks:{font:{size:9}}}},
         plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
@@ -2182,7 +2212,93 @@ function buildField(){
     {k:'delta',t:'Field less model',n:1,r:r=>'<span class="'+(r.delta>0?'tu':r.delta<0?'td':'tn')+'">'+
       (r.delta>0?'+':'')+k$(r.delta)+'</span>'},
     {k:'opps',t:'Opps',n:1}
-  ], F.reps, {label:'ALL REPS', unit:'reps'});
+  ], F.reps, {label:'ALL REPS', unit:'reps',
+     onRow:r=>selRep(r.rep), rowCls:r=>r.rep===ST.frep?'selrow':''});
+  buildFieldDeals();
+}
+
+/* ---- the deals behind each rep's call ---------------------------------------
+   Reps submit one number, not a deal list, so a disagreement can only be argued deal by deal from
+   the model's side: here is what it is counting, now which of these are you not? The deal set is
+   the model's own FY27 Q3 list (it includes two deals already past their close date and still
+   open), so each rep's rows add up to exactly the model figure on the chart above. The global
+   filter applies at rep grain, like the rest of this view - a rep's deals booked in another cell
+   stay with the rep and are flagged. */
+let FIELD_REPS=[], FREP_RS=[];
+function repBarColors(){
+  const on=r=>!ST.frep||r.rep===ST.frep;
+  return [FREP_RS.map(r=>on(r)?'#d2a8ffcc':'#d2a8ff33'), FREP_RS.map(r=>on(r)?'#3fb950cc':'#3fb95033')];
+}
+function selRep(id){
+  ST.frep=(ST.frep===id)? null : id;
+  if(CH.frep){ const c=repBarColors();
+    CH.frep.data.datasets[0].backgroundColor=c[0]; CH.frep.data.datasets[1].backgroundColor=c[1];
+    CH.frep.update('none'); }
+  reTable('#tFieldRep'); buildFieldDeals(); writeHash();
+}
+function buildFieldDeals(){
+  const byId={}; FIELD_REPS.forEach(r=>{ byId[r.rep]=r; });
+  const ids=new Set(D.bridge.opp['FY27 Q3'].map(o=>o.opp));
+  const all=D.pipe.open.rows.filter(o=>ids.has(o.opp)&&byId[o.rep]).map(o=>{
+    const r=byId[o.rep];
+    return Object.assign({},o,{repName:r.name, cell:o.seg+CELLSEP+o.reg,
+      away:(o.seg!==r.seg||o.reg!==r.region)?1:0, wimp:o.imp?o.wtd:0});
+  });
+  const R=ST.frep? byId[ST.frep] : null;
+  const rows=R? all.filter(o=>o.rep===R.rep) : all;
+  const S=k=>rows.reduce((a,o)=>a+(o[k]||0),0);
+  const nAway=rows.filter(o=>o.away).length;
+  $('#fDealAll').style.display=R? '' : 'none';
+  $('#fDealTitle').textContent = R
+    ? 'FY27 Q3 deals — '+R.name+' ('+R.rep+', '+R.seg+CELLSEP+R.region+'), '+rows.length+' deals'
+    : 'FY27 Q3 deals behind the call — every rep, '+rows.length+' deals';
+  let n;
+  if(!R){
+    n=rows.length+' open deals closing in FY27 Q3 across '+FIELD_REPS.length+' reps. The model credits <b>'+
+      k$(S('wtd'))+'</b> of net new ARR on them, and <b>'+k$(S('wimp'))+'</b> of that sits on deals whose '+
+      'close date the '+D.pipe.open.cycle+'-day median cycle cannot support. Reps submit one number, not '+
+      'a deal list, so this is what the model is counting &mdash; the question for each rep is which of '+
+      'these they are not. <b>Click a rep</b> in the chart or table above to narrow the list.';
+  }else{
+    const acc=R.acc===null? 'no closed history, so accuracy is taken as 1.00'
+            : pc(R.acc)+' historical accuracy';
+    n='<b>'+esc(R.name)+'</b> called <b>'+k$(R.call)+'</b> gross, which becomes <b>'+k$(R.xlated)+
+      '</b> net new after '+acc+(R.netr===null?'':' &times; '+R.netr.toFixed(2)+' netting')+
+      '. The model credits <b>'+k$(S('wtd'))+'</b> across '+rows.length+' deal'+(rows.length===1?'':'s')+
+      (S('wimp')? ', <b>'+k$(S('wimp'))+'</b> of it on close dates the cycle cannot support' : '')+
+      '. Field less model: <b class="'+(R.delta>=0?'tu':'td')+'">'+(R.delta>0?'+':'')+k$(R.delta)+'</b>.';
+    if(R.acc===0) n+=' Nothing closed against '+k$(R.hist_call)+' called over Q1 and Q2, so the whole '+
+      'call translates to zero &mdash; two quarters is a thin basis for that.';
+    if(R.crm>0 && R.call>1.5*R.crm) n+=' The call is <b>'+(R.call/R.crm).toFixed(1)+'&times;</b> the gross '+
+      'pipeline this rep has in CRM for the quarter, so part of it rests on deals the CRM does not show.';
+    if(nAway) n+=' '+nAway+' of these deal'+(nAway===1?' is':'s are')+' booked outside the rep&rsquo;s own '+
+      'cell, so at segment &times; region level '+(nAway===1?'it lands':'they land')+' in a different row '+
+      'from the call.';
+  }
+  $('#fDealNote').innerHTML=n;
+  mkTable('#tFDeals',(R?[]:[{k:'repName',t:'Rep'}]).concat([
+    {k:'opp',t:'Opp',ns:1},
+    {k:'name',t:'Deal'},
+    {k:'acct',t:'Account',r:o=>o.acct? esc(o.acct)
+      :'<span class="chip c-or" data-tip="New Logo with no account yet - nothing to net against, so gross is incremental.">NL</span>'},
+    {k:'cell',t:'Booked to',r:o=>esc(o.cell)+(o.away?' <span class="chip c-or" data-tip="'+
+      esc('Booked outside '+o.repName+'’s own cell ('+byId[o.rep].seg+CELLSEP+byId[o.rep].region+
+      '), so at segment × region level it sits in a different row from their call.')+'">other cell</span>':'')},
+    {k:'stage',t:'Stage'},
+    {k:'dtc',t:'Close',n:1,tot:false,r:o=>o.dtc===null? '<span class="tn">&mdash;</span>'
+      : o.dtc<0? '<span class="td">'+(-o.dtc)+'d overdue</span>'
+      : '<span class="'+(o.imp?'td':'tn')+'">in '+o.dtc+'d</span>'+(o.imp?' <span class="chip c-rd" data-tip="'+
+        esc('Deal is '+o.age+' days old and closes in '+o.dtc+'. The median won deal takes '+
+        D.pipe.open.cycle+' days, so the cycle cannot support this date. The model still counts it.')+
+        '">cycle can&rsquo;t make it</span>':'')},
+    {k:'age',t:'Age',n:1,tot:false,r:o=>o.age===null?'<span class="tn">&mdash;</span>':o.age+'d'},
+    {k:'gross',t:'Gross commit',n:1,r:o=>k$(o.gross)},
+    {k:'incr',t:'Incremental',n:1,tip:'Gross commit less the account’s trailing-3 recognised ARR, floored at zero.',r:o=>k$(o.incr)},
+    {k:'wtd',t:'Model credit',n:1,tip:'Incremental × stage probability: what the forecast counts for this deal.',
+     r:o=>'<b>'+k$(o.wtd)+'</b>'},
+    {k:'wimp',t:'Credit at risk',n:1,tip:'Model credit on a deal whose close date the median sales cycle cannot support.',
+     r:o=>o.wimp?'<span class="td">'+k$(o.wimp)+'</span>':'<span class="tn">&mdash;</span>'}
+  ]), rows, {label:R?'THIS REP':'ALL REPS', unit:'deals'});
 }
 
 /* ================= COMMIT vs USAGE ================= */
@@ -2345,6 +2461,7 @@ function stateHash(){
   if(ST.uq) p.set('search',ST.uq);
   const dk=ST.rcell? ST.rcell.k : PEND_DRILL;
   if(dk) p.set('risk-cell', ST.rl==='segreg'? cellUrl(dk) : dk);
+  if(ST.frep) p.set('rep',ST.frep);
   return p.toString();
 }
 function writeHash(){
@@ -2370,6 +2487,8 @@ function readHash(){
   const rc=p.get('risk-cell');
   PEND_DRILL=rc===null? null : (ST.rl==='segreg'? (cells.get(rc)||rc) : rc);
   ST.rcell=null;
+  const rp=p.get('rep');
+  ST.frep=D.field.reps.some(r=>r.rep===rp)? rp : null;
 }
 function syncControls(){
   URLKEYS.forEach(([k,n,attr])=>{ if(!attr) return;
@@ -2416,6 +2535,7 @@ wire('fl','fl',buildField);
 wire('bq','bq',buildBridge);
 wire('sl','sl',buildUseAll);
 wire('sy','sy',buildUseAll);
+$('#fDealAll').onclick=()=>{ if(ST.frep) selRep(ST.frep); };
 $('#uSearch').addEventListener('input',e=>{ST.uq=e.target.value;buildUseAll();writeHash();});
 
 /* Only the view on screen is built; the others build the first time they are opened, which is
