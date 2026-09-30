@@ -137,6 +137,7 @@ tfoot td{border-top:2px solid var(--bd);border-bottom:none;font-weight:600;
     <button class="pill" data-view="risk">Risk vs plan</button>
   </div>
   <div class="stamp" id="stamp"></div>
+  <button class="pill" id="shareBtn" data-tip="Copies a link that opens this exact view: the tab, the segment and region filters, every control on every view, the account search and any risk cell you have drilled into. Table sort order is not carried.">Copy link</button>
 </div>
 
 <div class="gfilter">
@@ -551,6 +552,128 @@ if(HAS_CHART){
 }
 const PAL=['#79c0ff','#3fb950','#ffa657','#d2a8ff','#ff7b72','#56d364','#f0883e','#a371f7'];
 
+/* ---- data labels ----------------------------------------------------------
+   One plugin for every chart, opted into per chart through lab(). Bars carry their value at the
+   tip, stacks carry their total (and a segment value only where it fits inside the segment), lines
+   and scatters label chosen points only. A label that would collide with one already drawn, spill
+   out of the plot, or not fit its column is dropped rather than clipped - the tooltip and the
+   tables still carry every value. Datasets are labelled in o.order, so when space runs out it is
+   the less important series that loses its labels. */
+const LABINK='#e6edf3';
+function lum(c){
+  const m=/^#([0-9a-f]{6})/i.exec(c||''); if(!m) return 0;
+  const n=parseInt(m[1],16), f=x=>{x/=255; return x<=.03928? x/12.92 : Math.pow((x+.055)/1.055,2.4);};
+  return .2126*f(n>>16&255)+.7152*f(n>>8&255)+.0722*f(n&255);
+}
+const vlabPlugin={id:'vlab',
+  afterDatasetsDraw(ch,_a,o){
+    if(!o||!o.on) return;
+    const ctx=ch.ctx, A=ch.chartArea, hz=ch.options.indexAxis==='y', fs=o.size||10;
+    const boxes=o.reserve? o.reserve(A) : [];     // regions another plugin has already written on
+    const fmt=(v,i,d)=>o.fmt? o.fmt(v,i,d) : String(v);
+    const fill=(ds,i)=>Array.isArray(ds.backgroundColor)? ds.backgroundColor[i] : ds.backgroundColor;
+    const inkOn=bg=>lum(bg)>.35? '#0d1117' : '#ffffff';
+    const iS=ch.scales[hz?'y':'x'], nL=(ch.data.labels||[]).length||1;
+    const slot=iS? (hz? iS.height : iS.width)/nL : Infinity;
+    ctx.save();
+    ctx.font='600 '+fs+'px "IBM Plex Sans",system-ui,sans-serif';
+    ctx.textBaseline='middle'; ctx.textAlign='left';
+    /* Draw s anchored at (x,y); al is left|right|center. Returns false, drawing nothing, if the
+       label would leave the plot or overlap one already on the canvas. */
+    const put=(s,x,y,al,ink)=>{
+      const w=ctx.measureText(s).width, l=al==='left'? x : al==='right'? x-w : x-w/2;
+      const b={l:l-1, r:l+w+1, t:y-fs/2-1, b:y+fs/2+1};
+      if(b.l<A.left-2||b.r>A.right+2||b.t<A.top-2||b.b>A.bottom+2) return false;
+      if(boxes.some(q=>b.l<q.r&&b.r>q.l&&b.t<q.b&&b.b>q.t)) return false;
+      boxes.push(b); ctx.fillStyle=ink||LABINK; ctx.fillText(s,l,y); return true;
+    };
+    const tw=s=>ctx.measureText(s).width;
+    let vis=ch.data.datasets.map((_,d)=>d).filter(d=>ch.isDatasetVisible(d)&&(!o.ds||o.ds.indexOf(d)>=0));
+    if(o.order) vis=o.order.filter(d=>vis.indexOf(d)>=0).concat(vis.filter(d=>o.order.indexOf(d)<0));
+
+    if(o.stack){
+      /* Totals first - they are the number the stack exists to show - then segments that fit. */
+      const stacks={};
+      vis.forEach(d=>{ const k=ch.data.datasets[d].stack||'_'; (stacks[k]=stacks[k]||[]).push(d); });
+      Object.keys(stacks).forEach(k=>{
+        const ds=stacks[k];
+        for(let i=0;i<nL;i++){
+          let tot=0, end=null, mid=null;
+          ds.forEach(d=>{
+            const v=ch.data.datasets[d].data[i]; if(typeof v!=='number'||!v) return;
+            tot+=v;
+            const p=ch.getDatasetMeta(d).data[i].getProps(['x','y','base'],true);
+            const e=hz? Math.max(p.x,p.base) : Math.min(p.y,p.base);
+            end=(end===null)? e : (hz? Math.max(end,e) : Math.min(end,e)); mid=hz? p.y : p.x;
+          });
+          if(!tot||end===null) continue;
+          const s=o.tot? o.tot(tot,i,k) : fmt(tot,i,-1);
+          if(!s) continue;
+          if(hz) put(s,end+4,mid,'left');
+          else if(tw(s)<=slot-2) put(s,mid,end-fs/2-3,'center');
+        }
+      });
+      if(o.seg) vis.forEach(d=>{
+        const dset=ch.data.datasets[d];
+        if(stacks[dset.stack||'_'].length<2) return;          // a lone segment is its own total
+        ch.getDatasetMeta(d).data.forEach((el,i)=>{
+          const v=dset.data[i]; if(typeof v!=='number'||!v) return;
+          const s=fmt(v,i,d), p=el.getProps(['x','y','base','width','height'],true);
+          const len=hz? Math.abs(p.x-p.base) : Math.abs(p.base-p.y), th=hz? p.height : p.width;
+          if(len<(hz? tw(s)+10 : fs+8) || th<(hz? fs+3 : tw(s)+6)) return;
+          put(s,hz?(p.x+p.base)/2:p.x,hz?p.y:(p.y+p.base)/2,'center',inkOn(fill(dset,i)));
+        });
+      });
+      ctx.restore(); return;
+    }
+
+    vis.forEach(d=>{
+      const dset=ch.data.datasets[d], meta=ch.getDatasetMeta(d), n=dset.data.length;
+      meta.data.forEach((el,i)=>{
+        const v=dset.data[i];
+        if(v===null||v===undefined) return;
+        if(meta.type==='bar'){
+          const s=fmt(v,i,d); if(!s) return;
+          const p=el.getProps(['x','y','base'],true), neg=(typeof v==='number'&&v<0);
+          const ink=inkOn(fill(dset,i));
+          if(hz){
+            const tip=neg? Math.min(p.x,p.base) : Math.max(p.x,p.base), len=Math.abs(p.x-p.base);
+            if(!(neg? put(s,tip-4,p.y,'right') : put(s,tip+4,p.y,'left')) && len>=tw(s)+8)
+              neg? put(s,tip+4,p.y,'left',ink) : put(s,tip-4,p.y,'right',ink);
+          }else{
+            if(tw(s)>slot-2) return;
+            const top=Math.min(p.y,p.base), bot=Math.max(p.y,p.base);
+            if(!(neg? put(s,p.x,bot+fs/2+3,'center') : put(s,p.x,top-fs/2-3,'center')) && bot-top>=fs+6)
+              put(s,p.x,neg? bot-fs/2-3 : top+fs/2+3,'center',ink);
+          }
+          return;
+        }
+        /* line or scatter: only the points the chart asks for (default: the last one with data) */
+        const want = o.pick? o.pick(i,d)
+                   : o.pts? o.pts(i,d,n)
+                   : i===dset.data.map(x=>x!==null&&x!==undefined).lastIndexOf(true);
+        if(!want) return;
+        const s=fmt(v,i,d); if(!s) return;
+        const p=el.getProps(['x','y'],true), r=(el.options&&el.options.radius)||3, g=r+4;
+        [[p.x,p.y-fs/2-g,'center'],[p.x,p.y+fs/2+g,'center'],[p.x-g,p.y,'right'],
+         [p.x+g,p.y,'left'],[p.x,p.y-fs/2-g,'right'],[p.x,p.y-fs/2-g,'left']]
+          .some(c=>put(s,c[0],c[1],c[2]));
+      });
+    });
+    ctx.restore();
+  }};
+if(HAS_CHART) Chart.register(vlabPlugin);
+/* Turns labels on for a chart config and gives the value axis headroom so tip labels are not
+   pushed off the plot. An axis with a fixed max or a log scale is left alone. */
+function lab(cfg,o){
+  const op=cfg.options=cfg.options||{};
+  op.plugins=op.plugins||{};
+  op.plugins.vlab=Object.assign({on:true},o);
+  const id=op.indexAxis==='y'? 'x' : 'y', sc=(op.scales=op.scales||{}), s=(sc[id]=sc[id]||{});
+  if(s.grace===undefined && s.max===undefined && s.type!=='logarithmic') s.grace=o.grace||'12%';
+  return cfg;
+}
+
 /* Totals row. A column opts out with tot:false, or supplies tot:rows=>value for anything that
    must not be added up - a rate, a ratio, a percentage. Summing those is the classic spreadsheet
    lie (12 cells each "62% of plan" do not total 744%), so the default for a rate is to compute it
@@ -625,12 +748,13 @@ function showView(v){
      were built eagerly at load and had no guard, so after a filter change they kept showing the
      unfiltered numbers until something else happened to rebuild them. */
   if(!BUILT[v]){ rebuildView(v); BUILT[v]=1; }
+  writeHash();
 }
 function wire(attr, key, cb){
   $$('[data-'+attr+']').forEach(b=>{
     b.onclick=()=>{
       b.parentElement.querySelectorAll('[data-'+attr+']').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); ST[key]=b.dataset[attr]; cb();
+      b.classList.add('active'); ST[key]=b.dataset[attr]; cb(); writeHash();
     };
   });
 }
@@ -737,7 +861,8 @@ function buildPipeChart(){
   const lbl = ST.dim==='byRegion'?'region' : ST.dim==='bySource'?'source' : 'type';
   $('#pipeChartTitle').textContent =
     (ST.meas==='arr'?'Gross commit ARR created per month by ':'Opportunities created per month by ')+lbl;
-  CH.pipe=new Chart($('#cPipe'),{type:'bar',
+  /* Up to eight series a month: totals only, the legend and tooltip carry the split. */
+  CH.pipe=new Chart($('#cPipe'),lab({type:'bar',
     data:{labels:P.months, datasets:keys.map((k,i)=>({label:k, data:src[k],
       backgroundColor:PAL[i%PAL.length]+'d9', borderColor:PAL[i%PAL.length], borderWidth:0}))},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
@@ -746,13 +871,14 @@ function buildPipeChart(){
                  ticks:{callback:v=>ST.meas==='arr'?k$(v):v},
                  title:{display:true,text:ST.meas==='arr'?'Created ARR':'Deals created',font:{size:10}}}},
       plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
-        tooltip:{callbacks:{label:c=>c.dataset.label+': '+(ST.meas==='arr'?k$(c.parsed.y):c.parsed.y)}}}}});
+        tooltip:{callbacks:{label:c=>c.dataset.label+': '+(ST.meas==='arr'?k$(c.parsed.y):c.parsed.y)}}}}},
+    {stack:true,size:9,fmt:v=>ST.meas==='arr'?k$(v):String(v)}));
 }
 function buildSrcChart(){
   destroyChart('src');
   if(!HAS_CHART) return noChart('#cSrc');
   const s=PIPE.sources;
-  CH.src=new Chart($('#cSrc'),{type:'bar',
+  CH.src=new Chart($('#cSrc'),lab({type:'bar',
     data:{labels:s.map(x=>x.source),datasets:[
       {label:'Created ARR, 12 months',data:s.map(x=>x.l12),backgroundColor:'#79c0ffcc',order:2,yAxisID:'y'},
       {label:'Win rate',data:s.map(x=>x.wr*100),type:'line',borderColor:'#ffa657',backgroundColor:'#ffa657',
@@ -765,7 +891,8 @@ function buildSrcChart(){
             ticks:{callback:v=>v+'%'},title:{display:true,text:'Win rate',font:{size:10}}}},
       plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
         tooltip:{callbacks:{label:c=>c.dataset.yAxisID==='y1'
-          ? 'Win rate: '+c.parsed.y.toFixed(0)+'%' : 'Created: '+k$(c.parsed.y)}}}}});
+          ? 'Win rate: '+c.parsed.y.toFixed(0)+'%' : 'Created: '+k$(c.parsed.y)}}}}},
+    {order:[1,0],pts:()=>true,fmt:(v,i,d)=>d===1? Math.round(v)+'%' : k$(v)}));
 }
 function buildPipeTables(){
   mkTable('#tSrc',[
@@ -837,7 +964,7 @@ function buildOpen(){
     const st=O.stages.filter(s=>rows.some(r=>r.stage===s));
     const sg=st.map(s=>rows.filter(r=>r.stage===s).reduce((a,r)=>a+r.gross,0));
     const sw=st.map(s=>rows.filter(r=>r.stage===s).reduce((a,r)=>a+r.wtd,0));
-    CH.ostage=new Chart($('#cOpenStage'),{type:'bar',
+    CH.ostage=new Chart($('#cOpenStage'),lab({type:'bar',
       data:{labels:st,datasets:[
         {label:'Gross commit',data:sg,backgroundColor:'#79c0ffcc',borderColor:'#79c0ff',borderWidth:1},
         {label:'Stage-weighted',data:sw,backgroundColor:'#3fb950cc',borderColor:'#3fb950',borderWidth:1}]},
@@ -846,12 +973,13 @@ function buildOpen(){
                    title:{display:true,text:'Gross commit ARR',font:{size:10}}},
                 y:{grid:{display:false},ticks:{font:{size:10}}}},
         plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
-          tooltip:{callbacks:{label:c=>c.dataset.label+': '+k$(c.parsed.x)}}}}});
+          tooltip:{callbacks:{label:c=>c.dataset.label+': '+k$(c.parsed.x)}}}}},
+      {fmt:v=>k$(v)}));
 
     const qs=O.quarters.filter(q=>rows.some(r=>r.closeQ===q));
     const ok=qs.map(q=>rows.filter(r=>r.closeQ===q&&!r.imp).reduce((a,r)=>a+r.gross,0));
     const bad=qs.map(q=>rows.filter(r=>r.closeQ===q&&r.imp).reduce((a,r)=>a+r.gross,0));
-    CH.oq=new Chart($('#cOpenQ'),{type:'bar',
+    CH.oq=new Chart($('#cOpenQ'),lab({type:'bar',
       data:{labels:qs,datasets:[
         {label:'Close date the cycle supports',data:ok,stack:'q',
          backgroundColor:'#79c0ffcc',borderColor:'#161d24',borderWidth:2},
@@ -863,7 +991,8 @@ function buildOpen(){
                    title:{display:true,text:'Gross commit ARR',font:{size:10}}}},
         plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
           tooltip:{filter:c=>c.parsed.y>0,
-            callbacks:{label:c=>c.dataset.label+': '+k$(c.parsed.y)}}}}});
+            callbacks:{label:c=>c.dataset.label+': '+k$(c.parsed.y)}}}}},
+      {stack:true,seg:true,fmt:v=>k$(v)}));
   }
 
   $('#openTableTitle').textContent='Every open opportunity — '+rows.length+' deals, '+k$(gross)+' gross';
@@ -956,6 +1085,7 @@ function applyFilters(){
   PIPE=pipeData();
   Object.keys(BUILT).forEach(k=>{ delete BUILT[k]; });
   rebuildView(ST.view);
+  writeHash();
 }
 function buildUseAll(){ buildPicks(); buildSplit(); buildSepRates(); buildGrowth();
                         buildSeasonality(); buildUseKpi(); buildUseTable(); }
@@ -988,7 +1118,7 @@ function buildSeasonality(){
 
   if(!HAS_CHART) return;
   destroyChart('seas');
-  CH.seas=new Chart($('#cSeas'),{type:'bar',
+  CH.seas=new Chart($('#cSeas'),lab({type:'bar',
     data:{labels:rows.map(r=>r.m),datasets:[{
       label:'Month-on-month growth',
       data:rows.map(r=>r.g),
@@ -1003,7 +1133,8 @@ function buildSeasonality(){
         tooltip:{callbacks:{label:c=>{const r=rows[c.dataIndex];
           return [pc(r.g)+' month on month',
                   r.jan?'JANUARY - one of the two slowest months on record'
-                       :(r.dec?'December - note it does not dip':'')].filter(Boolean);}}}}}});
+                       :(r.dec?'December - note it does not dip':'')].filter(Boolean);}}}}}},
+    {size:9,fmt:v=>pc(v)}));
   showChart('#cSeas');
 }
 function buildUseKpi(){
@@ -1079,7 +1210,7 @@ function buildSepRates(){
     'forecast.':'');
   if(!HAS_CHART) return noChart('#cSep');
   showChart('#cSep');
-  CH.sep=new Chart($('#cSep'),{type:'bar',
+  CH.sep=new Chart($('#cSep'),lab({type:'bar',
     data:{labels:rows.map(r=>r.k),datasets:[{data:rows.map(r=>r.v),
       backgroundColor:rows.map(r=>r.b?'#8b949ecc':r.v>0.02?'#3fb950cc':r.v<-0.02?'#f85149cc':'#d29922cc'),
       borderColor:rows.map(r=>r.b?'#8b949e':r.v>0.02?'#3fb950':r.v<-0.02?'#f85149':'#d29922'),
@@ -1092,7 +1223,8 @@ function buildSepRates(){
         tooltip:{callbacks:{label:c=>{const r=rows[c.dataIndex]||rows[0];
           return [pcn(r.v)+' per month',
                   k$(r.aug)+' of August consumption',
-                  r.n+' accounts'+(r.b?' (like-for-like population)':'')];}}}}}});
+                  r.n+' accounts'+(r.b?' (like-for-like population)':'')];}}}}}},
+    {fmt:v=>pcn(v)}));
 }
 
 function buildGrowth(){
@@ -1132,7 +1264,7 @@ function buildGrowth(){
              backgroundColor:'#79c0ffcc',borderColor:'#79c0ff',borderWidth:1}];
   if(hasFc) ds.push({label:'Used in the forecast',data:rows.map(r=>r.fc),
              backgroundColor:'#d2a8ffcc',borderColor:'#d2a8ff',borderWidth:1});
-  CH.grow=new Chart($('#cGrow'),{type:'bar',
+  CH.grow=new Chart($('#cGrow'),lab({type:'bar',
     data:{labels:rows.map(r=>r.k),datasets:ds},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
       scales:{x:{grid:{color:GRID},ticks:{callback:v=>pc1(v)},
@@ -1147,7 +1279,8 @@ function buildGrowth(){
             .concat((r.mo||[]).map((v,i)=>'  '+G.months[i]+'  '+pcn(v)))
             .concat(['August consumption '+k$(r.aug),
                      (r.n||0)+' accounts'+((r.n||0)<15?'  \u2014 thin, treat the rate as noisy':'')]);
-        }}}}}});
+        }}}}}},
+    {fmt:v=>pcn(v)}));
 }
 
 /* Row-level netting tip: Jun-Aug usage against the commit floor, month by month, so the overage
@@ -1255,7 +1388,10 @@ function buildQuad(){
     (pts.length?'':'  No account matches this combination \u2014 Self-Serve accounts are all PAYGO, so they have no commit to sit above or below.');
   if(!pts.length) return noChart('#cQuad');
   const col=p=>p.state==='Overage'?'#3fb950':p.state==='At floor'?'#ffa657':'#79c0ff';
-  CH.quad=new Chart($('#cQuad'),{type:'scatter',
+  /* 378 dots cannot all carry a name. The six largest by ARR do - the accounts a reader will
+     ask about first - and the tooltip covers the rest. */
+  const big=new Set(pts.map((p,i)=>[p.arr,i]).sort((a,b)=>b[0]-a[0]).slice(0,6).map(x=>x[1]));
+  CH.quad=new Chart($('#cQuad'),lab({type:'scatter',
     data:{datasets:[{label:'Accounts',data:pts.map(p=>({x:Math.max(p.x,1),y:Math.max(p.y,1),_p:p})),
       backgroundColor:pts.map(p=>col(p)+'99'),borderColor:pts.map(col),borderWidth:1,
       radius:c=>{const p=c.raw&&c.raw._p; if(!p) return 4;
@@ -1270,7 +1406,11 @@ function buildQuad(){
       plugins:{legend:{display:false},quad:{medX:D.meta.medx,medY:D.meta.medy},
         tooltip:{callbacks:{label:c=>{const p=c.raw&&c.raw._p; if(!p) return '';
           return [p.name+'  ['+p.id+']', p.seg+' / '+p.region+' / '+p.state,
-                  'Aug '+k$(p.x)+'  ->  Sep '+k$(p.y), 'ARR '+k$(p.arr)];}}}}}});
+                  'Aug '+k$(p.x)+'  ->  Sep '+k$(p.y), 'ARR '+k$(p.arr)];}}}}}},
+    {pick:i=>big.has(i),fmt:v=>v._p.name,
+     /* keep clear of the four quadrant names quadPlugin draws in the corners */
+     reserve:A=>[{l:A.left,r:A.left+130,t:A.top,b:A.top+24},{l:A.right-150,r:A.right,t:A.top,b:A.top+24},
+                 {l:A.left,r:A.left+90,t:A.bottom-18,b:A.bottom},{l:A.right-90,r:A.right,t:A.bottom-18,b:A.bottom}]}));
 }
 
 /* ================= RISK ================= */
@@ -1409,10 +1549,12 @@ function buildRisk(){
       'only, so there is no field bar here. That is a gap in the process, not a zero: the quarter '+
       'starts in six weeks and nothing has been called. <b>Click any bar</b> to roll the cell down '+
       'to the accounts behind it.';
-  CH.risk=new Chart($('#cRisk'),{type:'bar',
+  /* Forecast is labelled first and carries its % of plan; plan and field fill in where there is
+     room. At twelve cells the bars are too thin for all three, and the forecast is the story. */
+  CH.risk=new Chart($('#cRisk'),lab({type:'bar',
     data:{labels:g.map(short),datasets:ds},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      onClick:(e,els)=>{ if(els&&els.length){ ST.rcell=g[els[0].index]; buildRiskDrill(); } },
+      onClick:(e,els)=>{ if(els&&els.length){ ST.rcell=g[els[0].index]; buildRiskDrill(); writeHash(); } },
       scales:{x:{grid:{color:GRID},ticks:{callback:v=>k$(v),font:{size:9}},
                  title:{display:true,text:'Net new ARR',font:{size:10}}},
               y:{grid:{display:false},ticks:{font:{size:9}}}},
@@ -1422,11 +1564,14 @@ function buildRisk(){
           if(c.datasetIndex===2) return 'Field, translated '+k$(FC[r.k]||0);
           return ['Forecast '+k$(r.fc)+'  ('+pc(r.pct)+' of plan)',
                   'Gap '+k$(r.gap),
-                  'consumption '+k$(r.cons)+' + commit '+k$(r.commit)+' + logos '+k$(r.logo)];}}}}}});
+                  'consumption '+k$(r.cons)+' + commit '+k$(r.commit)+' + logos '+k$(r.logo)];}}}}}},
+    /* a field bar of 0 is a cell no rep covers - absent, not zero - so it gets no "$0" label */
+    {order:[1,0,2],fmt:(v,i,d)=>(d===2&&!v)? ''
+      : (d===1&&g[i].pct!==null)? k$(v)+' · '+pc(g[i].pct) : k$(v)}));
 
   destroyChart('cov');
   const cv=rows.filter(r=>r.plan>0).slice().sort((a,b)=>a.cov-b.cov);
-  CH.cov=new Chart($('#cCov'),{type:'bar',
+  CH.cov=new Chart($('#cCov'),lab({type:'bar',
     data:{labels:cv.map(r=>r.label),datasets:[{label:'Coverage',
       data:cv.map(r=>Math.min(r.cov,6)),
       backgroundColor:cv.map(r=>r.cov>=3?'#3fb950cc':r.cov>=1?'#ffa657cc':'#f85149cc'),
@@ -1438,7 +1583,9 @@ function buildRisk(){
               y:{grid:{display:false},ticks:{font:{size:9}}}},
       plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>{const r=cv[c.dataIndex]; if(!r) return '';
         return [(r.cov>=1000?'no remaining plan':r.cov.toFixed(2)+'x coverage'),
-                'Gross pipeline '+k$(r.pipe_gross), r.opps+' open opportunities'];}}}}}});
+                'Gross pipeline '+k$(r.pipe_gross), r.opps+' open opportunities'];}}}}}},
+    /* the label carries the real ratio, so a bar capped at 6x still says what it is */
+    {fmt:(v,i)=>cv[i].cov>=1000? 'no plan left' : cv[i].cov.toFixed(1)+'x'}));
   }
 
   $('#tRiskTitle').textContent = (ST.rl==='segreg') ? 'Segment × region'
@@ -1464,7 +1611,12 @@ function buildRisk(){
       '<span class="'+(r.cov>=1?'tu':'td')+'">'+r.cov.toFixed(1)+'x</span>'}
   ], rows, {label:'TOTAL',
      unit:(ST.rl==='segreg'?'cells':(rows.length===1?'group':'groups'))});
-  if(ST.rcell && !rows.some(x=>x.k===ST.rcell.k && x.q===ST.rq)) ST.rcell=null;
+  /* Re-resolve the drilled cell against the fresh rows rather than keeping the old object: after
+     a filter change the old one still carried the unfiltered numbers. A shared link hands over
+     only the cell's key, which is resolved here the first time the view is built. */
+  const want=(PEND_DRILL!==null)? PEND_DRILL : (ST.rcell? ST.rcell.k : null);
+  PEND_DRILL=null;
+  ST.rcell=(want!==null)? (rows.find(x=>x.k===want)||null) : null;
   buildRiskDrill();
 }
 
@@ -1529,7 +1681,7 @@ function buildBChart(){
   /* Levels are a different kind of mark from movements, so they take the neutral ink and only
      the movements carry the diverging pair. Sign is also in the tooltip, never colour alone. */
   const col=b=>b.type==='total' ? '#6e7681' : (b.v>=0?'#3fb950':'#f85149');
-  CH.bridge=new Chart($('#cBridge'),{type:'bar',
+  CH.bridge=new Chart($('#cBridge'),lab({type:'bar',
     data:{labels:bars.map(b=>b.label),
           datasets:[{data:geom,backgroundColor:bars.map(col),borderRadius:4,
                      borderSkipped:false,barPercentage:0.68}]},
@@ -1538,7 +1690,7 @@ function buildBChart(){
         if(!els||!els.length) return;
         const b=bars[els[0].index];
         if(b.type==='total') return;
-        ST.bbar=b.k; buildBBar(); buildBDrill();
+        ST.bbar=b.k; buildBBar(); buildBDrill(); writeHash();
       },
       plugins:{legend:{display:false},
         tooltip:{callbacks:{label:c=>{
@@ -1548,7 +1700,8 @@ function buildBChart(){
         }}}},
       scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:40}},
               y:{grid:{color:GRID},ticks:{callback:v=>k$(v)},
-                 title:{display:true,text:'Recognised ARR',font:{size:10}}}}}});
+                 title:{display:true,text:'Recognised ARR',font:{size:10}}}}}},
+    {fmt:(v,i)=>{const b=bars[i]; return b.type==='total'? k$(b.v) : (b.v>=0?'+':'−')+k$(Math.abs(b.v));}}));
 }
 
 function buildBBar(){
@@ -1557,7 +1710,7 @@ function buildBBar(){
     '<button class="pill'+(b.k===ST.bbar?' active':'')+'" data-bbar="'+b.k+'">'+
     esc(b.label)+'</button>').join('');
   $$('#bBarPills [data-bbar]').forEach(btn=>{
-    btn.onclick=()=>{ ST.bbar=btn.dataset.bbar; buildBBar(); buildBDrill(); };
+    btn.onclick=()=>{ ST.bbar=btn.dataset.bbar; buildBBar(); buildBDrill(); writeHash(); };
   });
 }
 
@@ -1818,7 +1971,7 @@ function buildField(){
   if(HAS_CHART){
     destroyChart('fgross'); destroyChart('fnet');
     const lbl=LV.map(r=>cell? r.seg.slice(0,4)+' '+r.region : r.k);
-    CH.fgross=new Chart($('#cFGross'),{type:'bar',
+    CH.fgross=new Chart($('#cFGross'),lab({type:'bar',
       data:{labels:lbl,datasets:[
         {label:'Rep commit call (gross)',data:LV.map(r=>r.call),
          backgroundColor:'#d2a8ffcc',borderColor:'#d2a8ff',borderWidth:1},
@@ -1831,9 +1984,10 @@ function buildField(){
         plugins:{legend:{position:'bottom',labels:{boxWidth:11,font:{size:10}}},
           tooltip:{callbacks:{label:c=>{const r=LV[c.dataIndex]||LV[0];
             return c.datasetIndex===0? 'Called '+k$(r.call)+' gross'
-              : ['Open pipeline '+k$(r.crm)+' gross', r.opps+' opportunities'];}}}}}});
+              : ['Open pipeline '+k$(r.crm)+' gross', r.opps+' opportunities'];}}}}}},
+      {fmt:v=>k$(v)}));
 
-    CH.fnet=new Chart($('#cFNet'),{type:'bar',
+    CH.fnet=new Chart($('#cFNet'),lab({type:'bar',
       data:{labels:lbl,datasets:[
         {label:'Field call, translated',data:LV.map(r=>r.xlated),
          backgroundColor:'#d2a8ffcc',borderColor:'#d2a8ff',borderWidth:1},
@@ -1849,7 +2003,8 @@ function buildField(){
           tooltip:{callbacks:{label:c=>{const r=LV[c.dataIndex]||LV[0];
             if(c.datasetIndex===2) return 'Plan '+k$(r.plan);
             return c.datasetIndex===0? 'Field, translated '+k$(r.xlated)
-              : 'Model weighted '+k$(r.wtd);}}}}}});
+              : 'Model weighted '+k$(r.wtd);}}}}}},
+      {fmt:v=>k$(v)}));
   }
 
   /* The reason the field call and the forecast never reconcile: they are not measures of the same
@@ -1876,7 +2031,7 @@ function buildField(){
     destroyChart('fcov');
     const surf='#161d24';
     const clab=LV.map(r=>ST.fl==='cell'? r.seg.slice(0,4)+' '+r.region : r.k);
-    CH.fcov=new Chart($('#cFCov'),{type:'bar',
+    CH.fcov=new Chart($('#cFCov'),lab({type:'bar',
       data:{labels:clab,datasets:[
         {label:'Consumption — no field view',data:LV.map(r=>r.cons||0),stack:'fc',
          backgroundColor:'#3d4b59',borderColor:surf,borderWidth:2},
@@ -1895,7 +2050,8 @@ function buildField(){
             callbacks:{label:c=>{const r=LV[c.dataIndex]||LV[0];
               const nm=c.dataset.label.split(' — ')[0];
               if(c.datasetIndex===3) return 'Plan: '+k$(r.plan);
-              return nm+': '+k$(c.parsed.x)+(r.nn? '  ('+pc(c.parsed.x/r.nn)+' of this row)':'');}}}}}});
+              return nm+': '+k$(c.parsed.x)+(r.nn? '  ('+pc(c.parsed.x/r.nn)+' of this row)':'');}}}}}},
+      {stack:true,seg:true,fmt:v=>k$(v)}));
   }
 
   const LCOLS=[
@@ -1964,7 +2120,7 @@ function buildField(){
     const steps=[['Field commit call (gross)',F.call],['Open CRM pipeline in scope (gross)',F.crm],
                  ['Less revenue already in the book',F.incr],['Stage-weighted incremental',F.wtd],
                  ['Field call translated to net new',F.xlated]];
-    CH.funnel=new Chart($('#cFunnel'),{type:'bar',
+    CH.funnel=new Chart($('#cFunnel'),lab({type:'bar',
       data:{labels:steps.map(s=>s[0]),datasets:[{data:steps.map(s=>s[1]),
         backgroundColor:['#8b949e','#8b949e','#79c0ff','#3fb950','#d2a8ff'],
         borderRadius:4,borderSkipped:false,barPercentage:.62}]},
@@ -1972,10 +2128,12 @@ function buildField(){
         scales:{x:{grid:{color:GRID},ticks:{callback:v=>k$(v),font:{size:9}}},
                 y:{grid:{display:false},ticks:{font:{size:9}}}},
         plugins:{legend:{display:false},
-          tooltip:{callbacks:{label:c=>k$(c.parsed.x)}}}}});
+          tooltip:{callbacks:{label:c=>k$(c.parsed.x)}}}}},
+      {fmt:v=>k$(v)}));
 
     destroyChart('fweek');
-    CH.fweek=new Chart($('#cFWeek'),{type:'line',
+    /* Six points and the note is about every step of the climb, so each week is labelled. */
+    CH.fweek=new Chart($('#cFWeek'),lab({type:'line',
       data:{labels:F.weeks,datasets:[{label:'Commit call',data:F.calls,
         borderColor:'#79c0ff',backgroundColor:'#79c0ff1f',borderWidth:2,
         pointRadius:3,pointHoverRadius:5,tension:.2,fill:true}]},
@@ -1983,12 +2141,13 @@ function buildField(){
         scales:{x:{grid:{display:false},ticks:{font:{size:9}}},
                 y:{grid:{color:GRID},beginAtZero:true,ticks:{callback:v=>k$(v)}}},
         plugins:{legend:{display:false},
-          tooltip:{callbacks:{label:c=>'Called '+k$(c.parsed.y)}}}}});
+          tooltip:{callbacks:{label:c=>'Called '+k$(c.parsed.y)}}}}},
+      {pts:()=>true,fmt:v=>k$(v)}));
 
     destroyChart('frep');
     const rs=F.reps.filter(r=>r.call>0||r.wtd>0).slice()
                    .sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).slice(0,12);
-    CH.frep=new Chart($('#cFRep'),{type:'bar',
+    CH.frep=new Chart($('#cFRep'),lab({type:'bar',
       data:{labels:rs.map(r=>r.name),datasets:[
         {label:'Field call, translated',data:rs.map(r=>r.xlated),
          backgroundColor:'#d2a8ffcc',borderColor:'#d2a8ff',borderWidth:1},
@@ -2004,7 +2163,8 @@ function buildField(){
                  'x accuracy '+(r.acc===null?'n/a (1.00 used)':r.acc.toFixed(2)),
                  'x netting '+(r.netr===null?'n/a':r.netr.toFixed(2)),
                  '= '+k$(r.xlated)]
-              : ['Model '+k$(r.wtd), r.opps+' open opps, '+k$(r.crm)+' gross'];}}}}}});
+              : ['Model '+k$(r.wtd), r.opps+' open opps, '+k$(r.crm)+' gross'];}}}}}},
+      {fmt:v=>k$(v)}));
   }
 
   mkTable('#tFieldRep',[
@@ -2130,7 +2290,8 @@ function buildSplit(){
     const est=new Array(LB.length).fill(null);
     est[LB.length-2]=U_[U_.length-1]; est[LB.length-1]=spS;
     const epr=new Array(LB.length).fill(0); epr[LB.length-1]=3.5;
-    CH['sp:'+i]=new Chart($('#cSp'+i),{type:'line',
+    /* End labels only: the last measured month and the September estimate. */
+    CH['sp:'+i]=new Chart($('#cSp'+i),lab({type:'line',
       data:{labels:LB,datasets:[
         {label:'Commit floor',data:pad(C_),borderColor:'#ffa657',borderWidth:1.5,borderDash:[4,3],
          pointRadius:0,pointHoverRadius:0,fill:false,tension:0},
@@ -2153,9 +2314,94 @@ function buildSplit(){
         plugins:{legend:{display:false},
           tooltip:{filter:c=>(c.datasetIndex===0||c.datasetIndex===3||c.datasetIndex===4)
                              && (!c.parsed || c.parsed.y!==null),
-            callbacks:{label:c=>c.dataset.label+': '+(idx? Math.round(c.parsed.y)+' idx' : k$(c.parsed.y))}}}}});
+            callbacks:{label:c=>c.dataset.label+': '+(idx? Math.round(c.parsed.y)+' idx' : k$(c.parsed.y))}}}}},
+      {ds:[3,4],size:9,pts:(j,d)=>j===(d===3? LB.length-2 : LB.length-1),
+       fmt:(v,j,d)=>(d===4?'Sep ':'')+(idx? Math.round(v)+'' : k$(v))}));
   });
 }
+
+/* ================= SHAREABLE LINKS ================= */
+/* The whole view state lives in the URL hash, so a copied link reopens exactly what the sender was
+   looking at. Only values that differ from the defaults are written, so a clean dashboard has a
+   clean URL. Every value read back is checked against what the page actually offers - a stale or
+   hand-edited link falls back to the default for that control instead of breaking the view.
+   [ST key, URL name, data- attribute of the buttons that set it] */
+const URLKEYS=[['view','view',null],['bq','bridge-q','bq'],['bbar','bridge-bar',null],
+  ['dim','pipe-split','dim'],['meas','pipe-measure','meas'],
+  ['sl','usage-split','sl'],['sy','usage-axis','sy'],['uwin','usage-window','uwin'],
+  ['qst','billing','qst'],['fl','field-level','fl'],['rq','risk-q','rq'],['rl','risk-rollup','rl']];
+const DEF={}; URLKEYS.forEach(u=>{ DEF[u[0]]=ST[u[0]]; });
+let PEND_DRILL=null;
+/* A segment x region cell is written as "Enterprise.EMEA" rather than with the on-screen middle
+   dot, which would arrive percent-encoded. */
+const cellUrl=c=>c.split(CELLSEP).join('.');
+
+function stateHash(){
+  const p=new URLSearchParams();
+  URLKEYS.forEach(([k,n])=>{ if(ST[k]!==DEF[k]) p.set(n,ST[k]); });
+  ST.fSeg.forEach(v=>p.append('seg',v));
+  ST.fReg.forEach(v=>p.append('region',v));
+  ST.fCell.forEach(v=>p.append('cell',cellUrl(v)));
+  if(ST.uq) p.set('search',ST.uq);
+  const dk=ST.rcell? ST.rcell.k : PEND_DRILL;
+  if(dk) p.set('risk-cell', ST.rl==='segreg'? cellUrl(dk) : dk);
+  return p.toString();
+}
+function writeHash(){
+  const h=stateHash();
+  try{ history.replaceState(null,'',location.pathname+location.search+(h?'#'+h:'')); }catch(e){}
+}
+function readHash(){
+  const p=new URLSearchParams(location.hash.replace(/^#/,''));
+  const A=D.usage.accounts, segs=new Set(A.map(a=>a.seg)), regs=new Set(A.map(a=>a.region)),
+        cells=new Map(A.map(a=>[cellUrl(cellOf(a)),cellOf(a)]));
+  URLKEYS.forEach(([k,n,attr])=>{
+    ST[k]=DEF[k];
+    const v=p.get(n); if(v===null) return;
+    const ok = k==='view'? $$('#nav [data-view]').map(b=>b.dataset.view)
+             : attr? $$('[data-'+attr+']').map(b=>b.dataset[attr]) : null;
+    if(!ok || ok.indexOf(v)>=0) ST[k]=v;           // bridge-bar is checked by buildBridge
+  });
+  const uniq=a=>a.filter((v,i)=>a.indexOf(v)===i);
+  ST.fSeg=uniq(p.getAll('seg').filter(v=>segs.has(v)));
+  ST.fReg=uniq(p.getAll('region').filter(v=>regs.has(v)));
+  ST.fCell=uniq(p.getAll('cell').map(v=>cells.get(v)).filter(Boolean));
+  ST.uq=p.get('search')||'';
+  const rc=p.get('risk-cell');
+  PEND_DRILL=rc===null? null : (ST.rl==='segreg'? (cells.get(rc)||rc) : rc);
+  ST.rcell=null;
+}
+function syncControls(){
+  URLKEYS.forEach(([k,n,attr])=>{ if(!attr) return;
+    $$('[data-'+attr+']').forEach(b=>b.classList.toggle('active', b.dataset[attr]===ST[k])); });
+  $('#uSearch').value=ST.uq;
+}
+function restoreFromHash(){
+  readHash(); syncControls(); buildPicks(); PIPE=pipeData();
+  Object.keys(BUILT).forEach(k=>{ delete BUILT[k]; });
+  showView(ST.view);                                 // builds the view and writes the canonical hash
+}
+function copyText(s){
+  if(navigator.clipboard&&window.isSecureContext) return navigator.clipboard.writeText(s);
+  return new Promise((res,rej)=>{
+    const t=document.createElement('textarea'); t.value=s; t.setAttribute('readonly','');
+    t.style.cssText='position:fixed;left:-9999px;top:0'; document.body.appendChild(t); t.select();
+    let ok=false; try{ ok=document.execCommand('copy'); }catch(e){}
+    t.remove(); ok? res() : rej();
+  });
+}
+$('#shareBtn').onclick=()=>{
+  writeHash();
+  const b=$('#shareBtn'), url=location.href;
+  copyText(url).then(()=>{ b.textContent='Link copied'; },
+                     ()=>{ window.prompt('Copy this link:',url); })
+    .then(()=>{ setTimeout(()=>{ b.textContent='Copy link'; },1600); });
+};
+/* A link pasted into a tab that already has the dashboard open changes only the hash, which does
+   not reload the page - so apply it here. Our own replaceState calls do not fire this event. */
+window.addEventListener('hashchange',()=>{
+  if(location.hash.replace(/^#/,'')!==stateHash()) restoreFromHash();
+});
 
 /* ================= INIT ================= */
 $('#stamp').textContent='built '+D.meta.gen;
@@ -2170,11 +2416,9 @@ wire('fl','fl',buildField);
 wire('bq','bq',buildBridge);
 wire('sl','sl',buildUseAll);
 wire('sy','sy',buildUseAll);
-$('#uSearch').addEventListener('input',e=>{ST.uq=e.target.value;buildUseAll();});
+$('#uSearch').addEventListener('input',e=>{ST.uq=e.target.value;buildUseAll();writeHash();});
 
-buildPicks();
-PIPE=pipeData();
-buildBridge();
-buildPipeKpi(); buildPipeStrip(); buildPipeChart(); buildSrcChart(); buildPipeTables(); buildOpen();
-buildUseKpi();
+/* Only the view on screen is built; the others build the first time they are opened, which is
+   what showView already does after a filter change. */
+restoreFromHash();
 </script>
